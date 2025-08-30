@@ -1,144 +1,98 @@
-Software Requirements Specification (SRS) for the High-Performance NUMA-Aware Memory Allocator
-Document Version: 1.0
+NUMA-Aware Memory Allocator
 
-Team: Devesh Mirchandani, Kartik Sharma, Padmnabh Tewari
+This project demonstrates a custom memory allocator in C that replaces the standard library's malloc, free, calloc, and realloc functions. The custom allocator is NUMA-aware, meaning it strategically places memory on specific NUMA nodes to improve performance on multi-socket systems.
 
-1. Introduction
-1.1 Purpose
-The purpose of this document is to provide a comprehensive and unambiguous Software Requirements Specification for our project: a custom, NUMA-aware memory allocator. This document will serve as the foundational blueprint for our team's development, testing, and validation efforts. It details the functional and non-functional requirements, architectural design, and a detailed plan for proving the allocator's effectiveness.
+The core mechanism uses LD_PRELOAD to intercept memory calls, mmap to request memory from the kernel, and mbind to set the NUMA policy for that memory.
+Prerequisites
 
-1.2 Scope
-Our project's scope is strictly defined: we will design and implement a dynamic memory allocator to serve as a high-performance replacement for the standard C library's malloc() and free(). The allocator will intelligently use Non-Uniform Memory Access (NUMA) features on multi-socket Linux servers to improve application performance. The project will not include a full-fledged memory management system for advanced features like thread caching, garbage collection, or memory pooling; our focus is solely on local NUMA node allocation.
+Before you begin, ensure you have the following installed on your Linux system (e.g., Ubuntu, Debian, Zorin OS):
 
-1.3 Target Audience
-This document is intended for our development team members, project stakeholders, and any future contributors. A reader should possess a foundational understanding of C programming, system architecture, and basic NUMA concepts.
+    A C compiler (gcc) and essential build tools.
 
-2. System Context and Architectural Design
-2.1 System Overview
-The allocator will exist as a shared library (.so) that is external to the target application. This non-intrusive design is critical as it allows for performance optimization without requiring any modification to the application's source code. The core interaction is facilitated by the Linux dynamic linker.
+    The NUMA development library (libnuma-dev).
 
-2.2 Architectural Model: The Dynamic Interception Layer
-Our architecture is a classic dynamic linker interception model using the LD_PRELOAD environment variable. When an application is executed, LD_PRELOAD forces the dynamic linker to load our shared library before the standard C library. Because our library exports functions with the same names (malloc, free), they are prioritized, effectively overriding the default system functions. This model allows our custom logic to be transparently injected into any application.
+You can install these with the following command:
 
-3. Functional Requirements (FRs)
-3.1 FR-1: High-Fidelity malloc and free Interface
-Requirement: The allocator shall expose two functions, malloc(size_t size) and free(void *ptr), that are fully compatible with the C standard library's functions.
+sudo apt-get update
+sudo apt-get install build-essential libnuma-dev
 
-FR-1.1: The malloc function shall accept a size_t argument and return a pointer to the newly allocated memory block.
+Code Files
 
-FR-1.2: The free function shall accept a pointer to a previously allocated memory block and release it. Passing a NULL pointer to free shall have no effect.
+This project consists of two main files:
 
-FR-1.3: malloc shall return a NULL pointer if the allocation request cannot be fulfilled due to insufficient memory.
+    numa_alloc.c: The source code for our custom, NUMA-aware memory allocator. This gets compiled into a shared library (.so file).
 
-3.2 FR-2: NUMA Node Identification
-Requirement: For every malloc call, the allocator must programmatically identify the NUMA node of the CPU on which the requesting thread is currently executing.
+    benchmark.c: A simple test program that allocates a large block of memory to demonstrate and verify the custom allocator.
 
-FR-2.1: The primary mechanism shall be a combination of sched_getcpu() to get the current CPU and numa_node_of_cpu() to map that CPU to a NUMA node ID.
+Compilation
 
-FR-2.2: The identification logic shall be executed with minimal overhead to ensure it does not negate the performance gains.
+Follow these two steps to compile the project.
 
-3.3 FR-3: Explicit First-Touch Allocation
-Requirement: Once the local NUMA node ID is identified, the allocator shall use libnuma to explicitly request memory from that specific node.
+1. Compile the NUMA Allocator
 
-FR-3.1: The core allocation function shall be numa_alloc_onnode(size, node_id).
+Compile numa_alloc.c into a shared library named numa_alloc.so.
 
-FR-3.2: This strategy enforces a "first-touch" policy at the allocation phase, ensuring that the memory pages are physically located on the local node where the thread is first using them.
+gcc -shared -fPIC -o numa_alloc.so numa_alloc.c -ldl -lnuma -lpthread
 
-3.4 FR-4: Robust Fallback Mechanism
-Requirement: The allocator shall include a robust and safe fallback mechanism to the standard C library's malloc and free functions.
+2. Compile the Benchmark Program
 
-FR-4.1: The fallback shall be triggered if libnuma is not available, the system is not NUMA-enabled, or if numa_alloc_onnode returns an error.
+Compile benchmark.c into an executable file named benchmark.
 
-FR-4.2: The fallback mechanism shall be implemented using dlsym to dynamically resolve the addresses of the original malloc and free functions, thereby avoiding infinite recursion.
+gcc -o benchmark benchmark.c
 
-3.5 FR-5: Thread Safety
-Requirement: The allocator must be completely thread-safe and reentrant.
+How to Run and Verify
 
-FR-5.1: It shall be capable of handling simultaneous malloc and free calls from multiple threads without introducing race conditions, deadlocks, or memory corruption.
+To see the allocator in action, you need to run the benchmark program with the custom library preloaded. The verification process requires two terminals.
 
-FR-5.2: We will rely on libnuma's inherent thread-safety for the core allocation, and use explicit locking mechanisms (e.g., mutexes) if any custom, internal data structures are required.
+Step 1: Run the Benchmark (Terminal 1)
 
-4. Non-Functional Requirements (NFRs)
-4.1 NFR-1: Performance
-Requirement: Our primary objective is to demonstrably improve application performance.
+In your first terminal, execute the following command:
 
-NFR-1.1: We will target a minimum of 20% reduction in execution time for a synthetic, memory-intensive, multi-threaded workload on a dual-socket server.
+LD_PRELOAD=./numa_alloc.so ./benchmark
 
-NFR-1.2: We expect a significant reduction in cache and memory access latency, specifically for remote NUMA accesses.
+The program will run and then pause, waiting for you to press Enter. The memory is now allocated.
 
-4.2 NFR-2: Portability
-Requirement: The allocator must function correctly on any Linux system with libnuma and a kernel that supports NUMA.
+Step 2: Verify Memory Placement (Terminal 2)
 
-NFR-2.1: On non-NUMA systems, the allocator must seamlessly fall back to the standard malloc without any user intervention or configuration.
+While the first terminal is paused, open a second terminal.
 
-4.3 NFR-3: Efficiency
-Requirement: The overhead introduced by our custom allocation logic must be negligible.
+First, find the Process ID (PID) of the running benchmark:
 
-NFR-3.1: On single-socket systems or when the fallback is used, our allocator's performance overhead relative to the standard malloc shall be less than 5%.
+pidof benchmark
 
-5. Test Plan and Validation Strategy
-We will conduct rigorous testing to validate both the correctness and the performance of our allocator.
+This will return a number (e.g., 12345).
 
-5.1 Test Environment
-Hardware: A dual-socket server with at least two NUMA nodes (e.g., Intel Xeon E5 or higher).
+Next, use this PID to inspect the kernel's NUMA memory map for the process. (Replace PID with the number you received).
 
-Software: Linux kernel 3.19 or later, libnuma library, and standard C compiler (gcc).
+cat /proc/PID/numa_maps
 
-5.2 Test Cases
-Test ID
+Step 3: Analyze the Output
 
-Description
+In the output of the numa_maps command, you are looking for a line corresponding to the large 256MB allocation. It will look like this:
 
-Expected Result
+7f... bind:0 anon=65537 dirty=65537 active=0 N0=65537 ...
 
-Rationale
+    bind:0: Proves that your code successfully set the memory policy to be bound to Node 0.
 
-TC-1
+    N0=65537: Proves that the kernel honored the policy and the memory is physically located on Node 0.
 
-Single-threaded allocation on a NUMA-enabled system.
+Step 4: Finish the Program
 
-Memory allocated is correctly returned, and numastat shows a high numa_hit count for the corresponding node.
+Go back to your first terminal and press Enter to allow the benchmark program to finish and free the memory.
+Testing on a True Multi-Node System
 
-Validates the core "first-touch" policy.
+If you have access to a multi-socket server with multiple NUMA nodes, you can use the taskset utility to see the performance impact of memory locality.
 
-TC-2
+    Find the CPU cores for each node with lscpu.
 
-Multi-threaded allocation with CPU affinity pinning.
+    Good Case (CPU and Memory Local): Pin the process to a core on Node 0.
 
-Each thread, pinned to a specific NUMA node, successfully allocates memory on that node. numastat shows high numa_hit counts on multiple distinct nodes.
+    # Run on CPU core 0 (assuming it's on Node 0)
+    LD_PRELOAD=./numa_alloc.so taskset -c 0 ./benchmark
 
-Verifies correct multi-threaded, multi-node allocation.
+    Bad Case (CPU and Memory Remote): Pin the process to a core on a different node (e.g., Node 1).
 
-TC-3
+    # Run on CPU core 32 (assuming it's on Node 1)
+    LD_PRELOAD=./numa_alloc.so taskset -c 32 ./benchmark
 
-Deallocation and memory leak check.
-
-A large allocation followed by deallocation should not show any memory leaks when using a tool like Valgrind.
-
-Ensures our free wrapper is correct and safe.
-
-TC-4
-
-Execution on a non-NUMA system.
-
-Our allocator transparently falls back to malloc, and the program executes correctly without errors or performance degradation.
-
-Validates the robustness of the fallback mechanism.
-
-5.3 Performance Analysis and Metrics
-We will use a variety of tools to gather a complete performance profile. The following conceptual graphs illustrate our expected results.
-
-Graph 1: Execution Time Comparison. This bar chart will compare the total execution time of our test application when using the standard malloc versus our NUMA-aware allocator. We will plot the normalized time, with the standard allocator set to 100%. We expect our solution to demonstrate a significant reduction in execution time, providing quantifiable evidence of our NFR-1.
-
-Graph 2: NUMA Statistics Over Time. This line graph will show the numa_hit and numa_miss counts collected using numastat over the execution time of our test application. We expect to see an almost flat line for numa_miss and a steeply rising line for numa_hit when using our allocator, visually proving that we are successfully allocating on the local node. The standard malloc's graph would show a higher proportion of numa_miss and numa_foreign pages.
-
-6. Conclusion and Future Work
-Our team is confident that this detailed SRS provides a clear and professional roadmap for delivering a high-quality, high-performance NUMA-aware memory allocator. We believe our solution will provide a substantial performance boost for memory-intensive applications on modern server hardware.
-
-Upon successful completion and validation of the core project, we will explore the following advanced features:
-
-Adaptive NUMA Policies: Developing dynamic allocation policies that can adapt to changing application behavior at runtime, moving beyond a simple "first-touch" strategy.
-
-Hardware Topology Awareness: Extending the allocator to be aware of the underlying hardware topology, including L1/L2/L3 cache hierarchies and socket interconnects.
-
-Advanced Benchmarking: A formal, large-scale benchmarking effort against industry-standard memory allocators like jemalloc and tcmalloc to publish a comparative analysis.
+You will observe that the "Bad Case" takes significantly longer to complete, demonstrating the importance of NUMA-aware allocation.
